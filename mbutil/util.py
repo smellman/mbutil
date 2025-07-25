@@ -204,7 +204,7 @@ def disk_to_mbtiles(directory_path, mbtiles_file, **kwargs):
 
     for zoom_dir in get_dirs(directory_path):
         if kwargs.get("scheme") == 'ags':
-            if not "L" in zoom_dir:
+            if "L" not in zoom_dir:
                 if not silent: 
                     logger.warning("You appear to be using an ags scheme on an non-arcgis Server cache.")
             z = int(zoom_dir.replace("L", ""))
