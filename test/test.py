@@ -2,7 +2,7 @@ import os
 import shutil
 import json
 import pytest
-from mbutil import mbtiles_to_disk, disk_to_mbtiles
+from mbutil.util import mbtiles_to_disk, disk_to_mbtiles
 
 @pytest.fixture(autouse=True)
 def clear_data_each_test():
