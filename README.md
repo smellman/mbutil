@@ -7,7 +7,8 @@ Before exporting tiles to disk, see if there's a [Mapbox Hosting plan](http://ma
 or an open source [MBTiles server implementation](https://github.com/mapbox/mbtiles-spec/wiki/Implementations)
 that works for you - tiles on disk are notoriously difficult to manage.
 
-[![Build Status](https://secure.travis-ci.org/mapbox/mbutil.png)](http://travis-ci.org/mapbox/mbutil)
+[![CI](https://github.com/smellman/mbutil/actions/workflows/ci.yml/badge.svg)](https://github.com/smellman/mbutil/actions/workflows/ci.yml)
+[![PyPI version](https://badge.fury.io/py/smellman-mbutil.svg)](https://pypi.org/project/smellman-mbutil/)
 
 **Note well**: this project is no longer actively developed. Issues and pull requests will be attended to when possible, but delays should be expected.
 
