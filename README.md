@@ -72,7 +72,7 @@ Python installation (requires easy_install)
 
 ## Requirements
 
-* Python `>= 2.6`
+* Python `>= 3.8`
 
 ## Metadata
 
@@ -88,16 +88,10 @@ MBUtil imports and exports metadata as JSON, in the root of the tile directory, 
 
 ## Testing
 
-This project uses [nosetests](http://readthedocs.org/docs/nose/en/latest/) for testing. Install nosetests:
+This project uses pytest for testing. Install pytest:
 
-    pip install nose
-or
-
-    easy_install nose
-    
-Then run:
-
-    nosetests
+    hatch env create
+    hatch test
 
 ## See Also
 
