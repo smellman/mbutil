@@ -2,7 +2,6 @@ import os
 import shutil
 import json
 import pytest
-import time
 from mbutil import mbtiles_to_disk, disk_to_mbtiles
 
 @pytest.fixture(autouse=True)
