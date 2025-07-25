@@ -1,6 +1,6 @@
 [project]
 name = "smellman-mbutil"
-version = "0.3.2"
+version = "0.3.3"
 description = "An importer and exporter for MBTiles"
 readme = "README.md"
 requires-python = ">=3.8"
