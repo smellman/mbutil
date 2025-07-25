@@ -52,7 +52,7 @@ Python installation (requires easy_install)
                             the MapServer WMS TileCache directory structure "z/000/000/x/000/000/y.png"''',
                             and "zyx" which is the format vips dzsave --layout google uses.
       --image_format=FORMAT
-                            The format of the image tiles, either png, jpg, webp or pbf
+                            The format of the image tiles, either png, jpg, webp, pbf or mvt
       --grid_callback=CALLBACK
                             Option to control JSONP callback for UTFGrid tiles. If
                             grids are not used as JSONP, you can

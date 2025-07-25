@@ -41,8 +41,8 @@ def main():
         default='xyz')
         
     parser.add_option('--image_format', dest='format',
-        help='''The format of the image tiles, either png, jpg, webp or pbf''',
-        choices=['png', 'jpg', 'pbf', 'webp'],
+        help='''The format of the image tiles, either png, jpg, webp, pbf or mvt''',
+        choices=['png', 'jpg', 'pbf', 'webp', 'mvt'],
         default='png')
 
     parser.add_option('--grid_callback', dest='callback',
