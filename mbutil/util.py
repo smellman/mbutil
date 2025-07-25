@@ -9,7 +9,14 @@
 # for additional reference on schema see:
 # https://github.com/mapbox/node-mbtiles/blob/master/lib/schema.sql
 
-import sqlite3, sys, logging, time, os, json, zlib, re
+import sqlite3
+import sys
+import logging
+import time
+import os
+import json
+import zlib
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +282,7 @@ def disk_to_mbtiles(directory_path, mbtiles_file, **kwargs):
         compression_finalize(cur, con, silent)
 
     optimize_database(con, silent)
+    con.close()
 
 def mbtiles_metadata_to_disk(mbtiles_file, **kwargs):
     silent = kwargs.get('silent')
