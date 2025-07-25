@@ -13,23 +13,27 @@ that works for you - tiles on disk are notoriously difficult to manage.
 
 ## Installation
 
-Git checkout (requires git)
+Install with pip:
 
-    git clone https://github.com/mapbox/mbutil.git
-    cd mbutil
-    # get usage
-    ./mb-util -h
+```
+pip3 install smellman-mbutil
+```
 
-Then to install the mb-util command globally:
+or use sudo if you want to install it globally:
 
-    sudo python setup.py install
-    # then you can run:
-    mb-util
+```bash
+sudo pip3 install smellman-mbutil --break-system-packages
+```
 
-Python installation (requires easy_install)
+or clone the repository and install it manually:
 
-    easy_install mbutil
-    mb-util -h
+```bash
+git clone https://github.com/smellman/mbutil.git
+cd mbutil
+uv venv
+source .venv/bin/activate
+uv pip install .
+```
 
 ## Usage
 
