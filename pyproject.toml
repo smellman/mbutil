@@ -10,6 +10,10 @@ authors = [
     { name = "Tom MacWright", email = "tom@macwright.org" }
 ]
 
+maintainers = [
+    { name = "Taro Matsuzawa", email = "btm@tech.email.ne.jp" }
+]
+
 license = { file = "LICENSE.md" }
 keywords = ["map", "tiles", "mbtiles"]
 
