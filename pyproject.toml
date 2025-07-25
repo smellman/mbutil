@@ -1,0 +1,41 @@
+[project]
+name = "mbutil"
+version = "0.3.1"
+description = "An importer and exporter for MBTiles"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = []
+
+authors = [
+    { name = "Tom MacWright", email = "tom@macwright.org" }
+]
+
+license = { file = "LICENSE.md" }
+keywords = ["map", "tiles", "mbtiles"]
+
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent"
+]
+
+[project.scripts]
+mb-util = "mbutil.cli:main"
+
+[tool.hatch.envs.default]
+dependencies = [
+  "pytest"
+]
+
+[tool.hatch.envs.default.scripts]
+test = "pytest test/test.py"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["mbutil"]

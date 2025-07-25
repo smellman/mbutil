@@ -7,12 +7,14 @@
 # (c) 2016 ePi Rational, Inc.
 # Licensed under BSD
 
-import logging, os, sys
+import logging
+import os
+import sys
 from optparse import OptionParser
 
-from mbutil import mbtiles_to_disk, disk_to_mbtiles, mbtiles_metadata_to_disk
+from mbutil.util import mbtiles_to_disk, disk_to_mbtiles, mbtiles_metadata_to_disk
 
-if __name__ == '__main__':
+def main():
 
     logging.basicConfig(level=logging.DEBUG)
 
