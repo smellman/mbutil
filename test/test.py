@@ -2,7 +2,9 @@ import os
 import shutil
 import json
 import pytest
-from mbutil.util import mbtiles_to_disk, disk_to_mbtiles
+import boto3
+from moto import mock_aws
+from mbutil.util import mbtiles_to_disk, disk_to_mbtiles, mbtiles_to_s3
 
 @pytest.fixture(autouse=True)
 def clear_data_each_test():
@@ -11,6 +13,14 @@ def clear_data_each_test():
         shutil.rmtree('test/output')
     except Exception:
         pass
+
+BUCKET = "test-bucket"
+
+@pytest.fixture(autouse=True)
+def aws_dummy_creds(monkeypatch):
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "x")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "x")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-northeast-1")
 
 def test_mbtiles_to_disk():
     mbtiles_to_disk('test/data/one_tile.mbtiles', 'test/output')
@@ -55,3 +65,33 @@ def test_disk_to_mbtiles_zyx():
     disk_to_mbtiles('test/data/tiles/zyx', 'test/output/zyx.mbtiles', scheme='zyx', format='png')
     mbtiles_to_disk('test/output/zyx.mbtiles', 'test/output/tiles', callback=None)
     assert os.path.exists('test/output/tiles/3/1/5.png')
+
+@mock_aws
+def test_mbtiles_to_s3_uploads_objects():
+    region = "ap-northeast-1"
+    s3 = boto3.client("s3", region_name=region)
+    create_params = {"Bucket": BUCKET}
+    if region != "us-east-1":
+        create_params["CreateBucketConfiguration"] = {"LocationConstraint": region}
+    s3.create_bucket(**create_params)
+
+    mbtiles = os.path.join("test", "data", "one_tile.mbtiles")
+    mbtiles_to_s3(
+        mbtiles, BUCKET,
+        prefix="tiles",
+        scheme="xyz",
+        format="png",
+        cache_control="max-age=60",
+        content_encoding="gzip",
+    )
+
+    meta = s3.get_object(Bucket=BUCKET, Key="tiles/metadata.json")
+    assert meta["ContentType"].startswith("application/json")
+
+    head = s3.head_object(Bucket=BUCKET, Key="tiles/0/0/0.png")
+    assert head["ContentType"] == "image/png"
+    assert head["CacheControl"] == "max-age=60"
+
+    body = s3.get_object(Bucket=BUCKET, Key="tiles/0/0/0.png")["Body"].read()
+    assert isinstance(body, (bytes, bytearray))
+    assert len(body) > 0

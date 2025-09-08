@@ -18,6 +18,14 @@ import json
 import zlib
 import re
 
+try:
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+except Exception:  # defer import errors until the function is actually used
+    boto3 = None
+    BotoCoreError = Exception
+    ClientError = Exception
+
 logger = logging.getLogger(__name__)
 
 def flip_y(zoom, y):
@@ -57,7 +65,7 @@ def optimize_connection(cur):
     cur.execute("""PRAGMA journal_mode=DELETE""")
 
 def compression_prepare(cur, silent):
-    if not silent: 
+    if not silent:
         logger.debug('Prepare database compression.')
     cur.execute("""
       CREATE TABLE if not exists images (
@@ -73,10 +81,10 @@ def compression_prepare(cur, silent):
     """)
 
 def optimize_database(cur, silent):
-    if not silent: 
+    if not silent:
         logger.debug('analyzing db')
     cur.execute("""ANALYZE;""")
-    if not silent: 
+    if not silent:
         logger.debug('cleaning db')
 
     # Workaround for python>=3.6.0,python<3.6.2
@@ -193,10 +201,10 @@ def disk_to_mbtiles(directory_path, mbtiles_file, **kwargs):
         for name, value in metadata.items():
             cur.execute('insert into metadata (name, value) values (?, ?)',
                 (name, value))
-        if not silent: 
+        if not silent:
             logger.info('metadata from metadata.json restored')
     except IOError:
-        if not silent: 
+        if not silent:
             logger.warning('metadata.json not found')
 
     count = 0
@@ -205,14 +213,14 @@ def disk_to_mbtiles(directory_path, mbtiles_file, **kwargs):
     for zoom_dir in get_dirs(directory_path):
         if kwargs.get("scheme") == 'ags':
             if "L" not in zoom_dir:
-                if not silent: 
+                if not silent:
                     logger.warning("You appear to be using an ags scheme on an non-arcgis Server cache.")
             z = int(zoom_dir.replace("L", ""))
         elif kwargs.get("scheme") == 'gwc':
             z=int(zoom_dir[-2:])
         else:
             if "L" in zoom_dir:
-                if not silent: 
+                if not silent:
                     logger.warning("You appear to be using a %s scheme on an arcgis Server cache. Try using --scheme=ags instead" % kwargs.get("scheme"))
             z = int(zoom_dir)
         for row_dir in get_dirs(os.path.join(directory_path, zoom_dir)):
@@ -392,3 +400,247 @@ def mbtiles_to_disk(mbtiles_file, directory_path, **kwargs):
         if not silent:
             logger.info('%s / %s grids exported' % (done, count))
         g = grids.fetchone()
+
+
+# ---- S3 Export ----
+def mbtiles_to_s3(mbtiles_file, bucket, **kwargs):
+    """
+    Export tiles stored in an MBTiles file directly to an S3 bucket.
+
+    Parameters
+    ----------
+    mbtiles_file : str
+        Path to the .mbtiles SQLite file.
+    bucket : str
+        Destination S3 bucket name.
+
+    Keyword Args
+    ------------
+    prefix : str
+        Optional key prefix (e.g., "tiles"). Defaults to empty string.
+    scheme : str
+        One of {None, 'xyz', 'wms'}. Behaves like mbtiles_to_disk.
+        Default is None (TMS layout z/x/y).
+    format : str
+        Image format/extension for tiles. Defaults to 'png'.
+    callback : str
+        Optional JSONP callback for UTFGrid export.
+    silent : bool
+        If True, suppresses info logs.
+    cache_control : str
+        Optional Cache-Control header value (e.g., 'max-age=31536000, immutable').
+    content_type_override : str
+        Optional explicit Content-Type for tile images.
+    content_encoding : str
+        Optional Content-Encoding header. If set (e.g., 'gzip'), objects will be uploaded as-is
+        but with the given ContentEncoding metadata applied. This assumes payloads are already encoded.
+
+    Notes
+    -----
+    - Authentication relies on the default AWS credential chain (env vars, config files,
+      instance/role credentials, etc.). No custom auth is implemented here.
+    """
+
+    silent = kwargs.get('silent')
+    if silent:
+        logging.basicConfig(level=logging.ERROR)
+
+    if boto3 is None:
+        raise RuntimeError("boto3 is required to use mbtiles_to_s3 but was not importable.")
+
+    bucket = bucket.strip().replace("s3://", "").replace("/", "")
+
+    # Prepare S3 client
+    s3 = boto3.client('s3')
+
+    prefix = kwargs.get('prefix', '').strip('/')
+    scheme = kwargs.get('scheme')
+    image_ext = kwargs.get('format', 'png')
+    callback = kwargs.get('callback')
+    cache_control = kwargs.get('cache_control')
+    content_type_override = kwargs.get('content_type_override')
+    content_encoding = kwargs.get('content_encoding')
+
+    def _join_key(*parts):
+        parts = [p for p in parts if p not in (None, '', '/')]
+        return '/'.join(str(p).strip('/') for p in parts)
+
+    def _guess_content_type(ext):
+        if content_type_override:
+            return content_type_override
+        ext_l = ext.lower()
+        if ext_l in ('png',):
+            return 'image/png'
+        if ext_l in ('jpg', 'jpeg'):
+            return 'image/jpeg'
+        if ext_l in ('webp',):
+            return 'image/webp'
+        if ext_l in ('pbf',):
+            return 'application/x-protobuf'
+        if ext_l in ('mvt',):
+            return 'application/x-protobuf'
+        # default binary stream
+        return 'application/octet-stream'
+
+    if not silent:
+        logger.info("Exporting MBTiles to S3")
+        logger.debug("%s  -->  s3://%s/%s" % (mbtiles_file, bucket, prefix))
+
+    # Connect to MBTiles and read metadata
+    con = mbtiles_connect(mbtiles_file, silent)
+    try:
+        metadata = dict(con.execute('select name, value from metadata;').fetchall())
+    except Exception:
+        metadata = {}
+
+    # Upload metadata.json next to tiles for convenience
+    try:
+        meta_key = _join_key(prefix, 'metadata.json')
+        s3.put_object(
+            Bucket=bucket,
+            Key=meta_key,
+            Body=json.dumps(metadata, indent=4).encode('utf-8'),
+            ContentType='application/json; charset=utf-8'
+        )
+        if not silent:
+            logger.debug("uploaded %s" % meta_key)
+    except (BotoCoreError, ClientError) as e:
+        if not silent:
+            logger.warning("Could not upload metadata.json: %s" % e)
+
+    # If interactivity, also upload layer.json carrying the formatter
+    formatter = metadata.get('formatter')
+    if formatter:
+        try:
+            layer_key = _join_key(prefix, 'layer.json')
+            s3.put_object(
+                Bucket=bucket,
+                Key=layer_key,
+                Body=json.dumps({"formatter": formatter}).encode('utf-8'),
+                ContentType='application/json; charset=utf-8'
+            )
+            if not silent:
+                logger.debug("uploaded %s" % layer_key)
+        except (BotoCoreError, ClientError) as e:
+            if not silent:
+                logger.warning("Could not upload layer.json: %s" % e)
+
+    # Stream tiles from SQLite to S3
+    tiles = con.execute('select zoom_level, tile_column, tile_row, tile_data from tiles;')
+    t = tiles.fetchone()
+    done = 0
+
+    while t:
+        z, x, y, data = t[0], t[1], t[2], t[3]
+
+        # Path layout compatibility with mbtiles_to_disk
+        if scheme == 'xyz':
+            y = flip_y(z, y)
+            tile_dir_parts = (prefix, str(z), str(x))
+        elif scheme == 'wms':
+            # WMS-style shard directories; use same naming as mbtiles_to_disk
+            tile_dir_parts = (
+                prefix,
+                "%02d" % (z),
+                "%03d" % (int(x) / 1000000),
+                "%03d" % ((int(x) / 1000) % 1000),
+                "%03d" % (int(x) % 1000),
+                "%03d" % (int(y) / 1000000),
+                "%03d" % ((int(y) / 1000) % 1000)
+            )
+        else:
+            # Default TMS: z/x/y
+            tile_dir_parts = (prefix, str(z), str(x))
+
+        filename = ('%03d.%s' % (int(y) % 1000, image_ext)) if scheme == 'wms' else ('%s.%s' % (y, image_ext))
+        key = _join_key(*tile_dir_parts, filename)
+
+        try:
+            put_args = {
+                'Bucket': bucket,
+                'Key': key,
+                'Body': data,
+                'ContentType': _guess_content_type(image_ext)
+            }
+            if cache_control:
+                put_args['CacheControl'] = cache_control
+            if content_encoding:
+                put_args['ContentEncoding'] = content_encoding
+            s3.put_object(**put_args)
+            done += 1
+            if not silent and (done % 100 == 0):
+                logger.info('%s tiles uploaded' % done)
+        except (BotoCoreError, ClientError) as e:
+            if not silent:
+                logger.error('Failed to upload tile z=%s x=%s y=%s to %s: %s' % (z, x, y, key, e))
+
+        t = tiles.fetchone()
+
+    if not silent:
+        logger.debug('tile upload complete (%d tiles).' % done)
+
+    # UTFGrid export (if present)
+    callback = kwargs.get('callback')
+    try:
+        count = con.execute('select count(zoom_level) from grids;').fetchone()[0]
+        grids = con.execute('select zoom_level, tile_column, tile_row, grid from grids;')
+        g = grids.fetchone()
+    except sqlite3.OperationalError:
+        g = None
+
+    grids_done = 0
+    while g:
+        zoom_level, tile_column, y, grid_blob = g[0], g[1], g[2], g[3]
+
+        grid_data_cursor = con.execute(
+            'select key_name, key_json from grid_data where zoom_level = ? and tile_column = ? and tile_row = ?',
+            (zoom_level, tile_column, y)
+        )
+
+        if scheme == 'xyz':
+            y = flip_y(zoom_level, y)
+
+        grid_dir_parts = (prefix, str(zoom_level), str(tile_column)) if scheme != 'wms' else (
+            prefix,
+            "%02d" % (zoom_level),
+            "%03d" % (int(tile_column) / 1000000),
+            "%03d" % ((int(tile_column) / 1000) % 1000),
+            "%03d" % (int(tile_column) % 1000),
+            "%03d" % (int(y) / 1000000),
+            "%03d" % ((int(y) / 1000) % 1000)
+        )
+
+        grid_key = _join_key(*grid_dir_parts, '%s.grid.json' % y)
+
+        grid_json = json.loads(zlib.decompress(grid_blob).decode('utf-8'))
+        data = {}
+        row = grid_data_cursor.fetchone()
+        while row:
+            data[row[0]] = json.loads(row[1])
+            row = grid_data_cursor.fetchone()
+        grid_json['data'] = data
+
+        body = json.dumps(grid_json).encode('utf-8') if callback in (None, '', 'false', 'null') else ('%s(%s);' % (callback, json.dumps(grid_json))).encode('utf-8')
+
+        try:
+            s3.put_object(
+                Bucket=bucket,
+                Key=grid_key,
+                Body=body,
+                ContentType='application/json; charset=utf-8',
+                CacheControl=cache_control if cache_control else None
+            )
+            grids_done += 1
+            if not silent and (grids_done % 100 == 0):
+                logger.info('%s grids uploaded' % grids_done)
+        except (BotoCoreError, ClientError) as e:
+            if not silent:
+                logger.error('Failed to upload grid z=%s x=%s y=%s to %s: %s' % (zoom_level, tile_column, y, grid_key, e))
+
+        g = grids.fetchone()
+
+    if not silent and grids_done:
+        logger.debug('grid upload complete (%d grids).' % grids_done)
+
+    # No DB VACUUM/close necessary for export-only, but close to be polite
+    con.close()
