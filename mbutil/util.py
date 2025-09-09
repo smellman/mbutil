@@ -17,6 +17,7 @@ import os
 import json
 import zlib
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     import boto3
@@ -460,6 +461,7 @@ def mbtiles_to_s3(mbtiles_file, bucket, **kwargs):
     cache_control = kwargs.get('cache_control')
     content_type_override = kwargs.get('content_type_override')
     content_encoding = kwargs.get('content_encoding')
+    max_workers = int(kwargs.get('max_workers', 8))
 
     def _join_key(*parts):
         parts = [p for p in parts if p not in (None, '', '/')]
@@ -525,6 +527,33 @@ def mbtiles_to_s3(mbtiles_file, bucket, **kwargs):
             if not silent:
                 logger.warning("Could not upload layer.json: %s" % e)
 
+    # Thread pool for parallel S3 uploads
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    upload_futures = []
+
+    def _submit_upload(put_args):
+        # Use the existing s3 client; botocore clients are generally thread-safe for requests
+        return executor.submit(s3.put_object, **put_args)
+
+    # Apply simple backpressure to avoid unbounded memory usage
+    def _drain_completed(limit):
+        nonlocal done
+        drained = 0
+        for f in list(upload_futures):
+            if f.done():
+                upload_futures.remove(f)
+                try:
+                    f.result()
+                    done += 1
+                    if not silent and (done % 100 == 0):
+                        logger.info('%s tiles uploaded' % done)
+                except (BotoCoreError, ClientError) as e:
+                    if not silent:
+                        logger.error('Tile upload failed: %s', e)
+                drained += 1
+                if drained >= limit:
+                    break
+
     # Stream tiles from SQLite to S3
     tiles = con.execute('select zoom_level, tile_column, tile_row, tile_data from tiles;')
     t = tiles.fetchone()
@@ -555,26 +584,38 @@ def mbtiles_to_s3(mbtiles_file, bucket, **kwargs):
         filename = ('%03d.%s' % (int(y) % 1000, image_ext)) if scheme == 'wms' else ('%s.%s' % (y, image_ext))
         key = _join_key(*tile_dir_parts, filename)
 
+        # Build arguments for upload and submit to thread pool
+        put_args = {
+            'Bucket': bucket,
+            'Key': key,
+            'Body': data,
+            'ContentType': _guess_content_type(image_ext)
+        }
+        if cache_control:
+            put_args['CacheControl'] = cache_control
+        if content_encoding:
+            put_args['ContentEncoding'] = content_encoding
+
+        upload_futures.append(_submit_upload(put_args))
+
+        # Backpressure: if too many in-flight, drain some completed
+        if len(upload_futures) >= max_workers * 4:
+            _drain_completed(limit=max_workers)
+
+        t = tiles.fetchone()
+
+    # Wait for all remaining uploads to finish
+    for f in upload_futures:
         try:
-            put_args = {
-                'Bucket': bucket,
-                'Key': key,
-                'Body': data,
-                'ContentType': _guess_content_type(image_ext)
-            }
-            if cache_control:
-                put_args['CacheControl'] = cache_control
-            if content_encoding:
-                put_args['ContentEncoding'] = content_encoding
-            s3.put_object(**put_args)
+            f.result()
             done += 1
-            if not silent and (done % 100 == 0):
+            if (done % 1000 == 0):
                 logger.info('%s tiles uploaded' % done)
         except (BotoCoreError, ClientError) as e:
             if not silent:
-                logger.error('Failed to upload tile z=%s x=%s y=%s to %s: %s' % (z, x, y, key, e))
+                logger.error('Tile upload failed: %s', e)
 
-        t = tiles.fetchone()
+    executor.shutdown(wait=True)
 
     if not silent:
         logger.debug('tile upload complete (%d tiles).' % done)

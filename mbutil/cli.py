@@ -88,6 +88,11 @@ def main():
         help='''Optional prefix to add to the start of each S3 object key''',
         default='')
 
+    parser.add_option('--max_workers', dest='max_workers',
+        help='''Optional number of maximum workers to use for parallel processing (default: 8)''',
+        type=int,
+        default=8)
+
     (options, args) = parser.parse_args()
 
     # Transfer operations
