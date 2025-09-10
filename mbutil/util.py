@@ -22,10 +22,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
     import boto3
     from botocore.exceptions import BotoCoreError, ClientError
+    from botocore.config import Config
 except Exception:  # defer import errors until the function is actually used
     boto3 = None
     BotoCoreError = Exception
     ClientError = Exception
+    Config = None
 
 logger = logging.getLogger(__name__)
 
@@ -435,6 +437,28 @@ def mbtiles_to_s3(mbtiles_file, bucket, **kwargs):
     content_encoding : str
         Optional Content-Encoding header. If set (e.g., 'gzip'), objects will be uploaded as-is
         but with the given ContentEncoding metadata applied. This assumes payloads are already encoded.
+    max_pool_connections : int
+        HTTP connection pool size for the S3 client. Defaults to 64.
+    connect_timeout : int
+        Socket connect timeout in seconds. Defaults to 60.
+    read_timeout : int
+        Socket read timeout in seconds. Defaults to 120.
+    tcp_keepalive : bool
+        Enable TCP keepalive on sockets. Defaults to True.
+    accelerate : bool
+        Use S3 Transfer Acceleration endpoint (bucket must have acceleration enabled). Defaults to False.
+    dualstack : bool
+        Use dualstack (IPv6) endpoints where available. Defaults to False.
+    retries_mode : str
+        Override retry mode (e.g., 'adaptive', 'standard'). Optional.
+    retries_max_attempts : int
+        Override max attempts for retries. Optional.
+    endpoint_url : str
+        Custom S3-compatible endpoint URL. Optional.
+    max_workers : int
+        Number of threads for parallel uploads. Defaults to 32.
+    inflight_factor : int
+        Backpressure threshold factor (in-flight futures per worker). Defaults to 8.
 
     Notes
     -----
@@ -451,8 +475,54 @@ def mbtiles_to_s3(mbtiles_file, bucket, **kwargs):
 
     bucket = bucket.strip().replace("s3://", "").replace("/", "")
 
-    # Prepare S3 client
-    s3 = boto3.client('s3')
+    # Prepare S3 client (tunable for throughput)
+    # Tunables (kwargs override env / AWS config):
+    #   max_pool_connections: HTTP connection pool size (default 64)
+    #   connect_timeout/read_timeout: socket timeouts
+    #   tcp_keepalive: enable SO_KEEPALIVE on sockets (default True)
+    #   accelerate: use S3 Transfer Acceleration endpoint if bucket enabled
+    #   dualstack: use dualstack (IPv6) endpoints if available
+    #   retries_mode / retries_max_attempts: override retry behavior
+    #   endpoint_url: custom endpoint (e.g., S3-compatible storage)
+    max_pool_connections = int(kwargs.get('max_pool_connections', 64))
+    connect_timeout = int(kwargs.get('connect_timeout', 60))
+    read_timeout = int(kwargs.get('read_timeout', 120))
+    tcp_keepalive = bool(kwargs.get('tcp_keepalive', True))
+    use_accel = bool(kwargs.get('accelerate', False))
+    use_dualstack = bool(kwargs.get('dualstack', False))
+    retries_mode = kwargs.get('retries_mode')  # e.g., 'adaptive', 'standard'
+    retries_max_attempts = kwargs.get('retries_max_attempts')  # e.g., 10
+    endpoint_url = kwargs.get('endpoint_url')
+
+    if not silent:
+        logger.debug(
+            "S3 client config: pool=%s, timeouts=(%ss/%ss), keepalive=%s, accel=%s, dualstack=%s, retries=(mode=%s,max=%s)",
+            max_pool_connections, connect_timeout, read_timeout, tcp_keepalive,
+            use_accel, use_dualstack, retries_mode, retries_max_attempts,
+        )
+
+    if Config is not None:
+        cfg_kwargs = {
+            'max_pool_connections': max_pool_connections,
+            'connect_timeout': connect_timeout,
+            'read_timeout': read_timeout,
+            'tcp_keepalive': tcp_keepalive,
+            's3': {
+                'use_accelerate_endpoint': use_accel,
+                'use_dualstack_endpoint': use_dualstack,
+            },
+        }
+        # Only set retries if user provided explicit overrides; otherwise env/AWS config wins
+        if retries_mode or retries_max_attempts:
+            cfg_kwargs['retries'] = {
+                **({'mode': retries_mode} if retries_mode else {}),
+                **({'max_attempts': int(retries_max_attempts)} if retries_max_attempts else {}),
+            }
+        client_config = Config(**cfg_kwargs)
+        s3 = boto3.client('s3', config=client_config, endpoint_url=endpoint_url)
+    else:
+        # Fallback (should not happen in normal boto3 installs)
+        s3 = boto3.client('s3', endpoint_url=endpoint_url)
 
     prefix = kwargs.get('prefix', '').strip('/')
     scheme = kwargs.get('scheme')
@@ -461,7 +531,8 @@ def mbtiles_to_s3(mbtiles_file, bucket, **kwargs):
     cache_control = kwargs.get('cache_control')
     content_type_override = kwargs.get('content_type_override')
     content_encoding = kwargs.get('content_encoding')
-    max_workers = int(kwargs.get('max_workers', 8))
+    max_workers = int(kwargs.get('max_workers', 32))
+    inflight_factor = int(kwargs.get('inflight_factor', 8))  # number of in-flight futures per worker before draining
 
     def _join_key(*parts):
         parts = [p for p in parts if p not in (None, '', '/')]
@@ -598,7 +669,7 @@ def mbtiles_to_s3(mbtiles_file, bucket, **kwargs):
         upload_futures.append(_submit_upload(put_args))
 
         # Backpressure: if too many in-flight, drain some completed
-        if len(upload_futures) >= max_workers * 4:
+        if len(upload_futures) >= max_workers * inflight_factor:
             _drain_completed(limit=max_workers)
 
         t = tiles.fetchone()

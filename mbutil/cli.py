@@ -93,6 +93,11 @@ def main():
         type=int,
         default=8)
 
+    parser.add_option('--max_pool_connections', dest='max_pool_connections',
+        help='''Optional number of maximum connections to use for S3 client (default: 64)''',
+        type=int,
+        default=64)
+
     (options, args) = parser.parse_args()
 
     # Transfer operations
