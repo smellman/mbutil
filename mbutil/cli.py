@@ -98,6 +98,16 @@ def main():
         type=int,
         default=64)
 
+    parser.add_option('--inflight_factor', dest='inflight_factor',
+        help='''Optional factor to multiply max_workers by to determine number of in-flight S3 requests (default: 8)''',
+        type=int,
+        default=8)
+
+    parser.add_option('--sqlite_batch', dest='sqlite_batch',
+        help='''Optional number of operations to batch into a single transaction when writing to mbtiles (default: 1000)''',
+        type=int,
+        default=1000)
+
     (options, args) = parser.parse_args()
 
     # Transfer operations

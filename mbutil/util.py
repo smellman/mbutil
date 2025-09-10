@@ -459,6 +459,8 @@ def mbtiles_to_s3(mbtiles_file, bucket, **kwargs):
         Number of threads for parallel uploads. Defaults to 32.
     inflight_factor : int
         Backpressure threshold factor (in-flight futures per worker). Defaults to 8.
+    sqlite_batch : int
+        Number of rows to fetch from SQLite per round-trip. Defaults to 5000.
 
     Notes
     -----
@@ -533,6 +535,7 @@ def mbtiles_to_s3(mbtiles_file, bucket, **kwargs):
     content_encoding = kwargs.get('content_encoding')
     max_workers = int(kwargs.get('max_workers', 32))
     inflight_factor = int(kwargs.get('inflight_factor', 8))  # number of in-flight futures per worker before draining
+    sqlite_batch = int(kwargs.get('sqlite_batch', 5000))
 
     def _join_key(*parts):
         parts = [p for p in parts if p not in (None, '', '/')]
@@ -624,55 +627,55 @@ def mbtiles_to_s3(mbtiles_file, bucket, **kwargs):
                 if drained >= limit:
                     break
 
-    # Stream tiles from SQLite to S3
-    tiles = con.execute('select zoom_level, tile_column, tile_row, tile_data from tiles;')
-    t = tiles.fetchone()
+    # Stream tiles from SQLite to S3 in batches to reduce SQLite round-trips
+    tiles_cur = con.cursor()
+    tiles_cur.execute('select zoom_level, tile_column, tile_row, tile_data from tiles;')
     done = 0
 
-    while t:
-        z, x, y, data = t[0], t[1], t[2], t[3]
+    while True:
+        rows = tiles_cur.fetchmany(sqlite_batch)
+        if not rows:
+            break
+        for (z, x, y, data) in rows:
+            # Path layout compatibility with mbtiles_to_disk
+            if scheme == 'xyz':
+                y = flip_y(z, y)
+                tile_dir_parts = (prefix, str(z), str(x))
+            elif scheme == 'wms':
+                # WMS-style shard directories; use same naming as mbtiles_to_disk
+                tile_dir_parts = (
+                    prefix,
+                    "%02d" % (z),
+                    "%03d" % (int(x) / 1000000),
+                    "%03d" % ((int(x) / 1000) % 1000),
+                    "%03d" % (int(x) % 1000),
+                    "%03d" % (int(y) / 1000000),
+                    "%03d" % ((int(y) / 1000) % 1000)
+                )
+            else:
+                # Default TMS: z/x/y
+                tile_dir_parts = (prefix, str(z), str(x))
 
-        # Path layout compatibility with mbtiles_to_disk
-        if scheme == 'xyz':
-            y = flip_y(z, y)
-            tile_dir_parts = (prefix, str(z), str(x))
-        elif scheme == 'wms':
-            # WMS-style shard directories; use same naming as mbtiles_to_disk
-            tile_dir_parts = (
-                prefix,
-                "%02d" % (z),
-                "%03d" % (int(x) / 1000000),
-                "%03d" % ((int(x) / 1000) % 1000),
-                "%03d" % (int(x) % 1000),
-                "%03d" % (int(y) / 1000000),
-                "%03d" % ((int(y) / 1000) % 1000)
-            )
-        else:
-            # Default TMS: z/x/y
-            tile_dir_parts = (prefix, str(z), str(x))
+            filename = ('%03d.%s' % (int(y) % 1000, image_ext)) if scheme == 'wms' else ('%s.%s' % (y, image_ext))
+            key = _join_key(*tile_dir_parts, filename)
 
-        filename = ('%03d.%s' % (int(y) % 1000, image_ext)) if scheme == 'wms' else ('%s.%s' % (y, image_ext))
-        key = _join_key(*tile_dir_parts, filename)
+            # Build arguments for upload and submit to thread pool
+            put_args = {
+                'Bucket': bucket,
+                'Key': key,
+                'Body': data,
+                'ContentType': _guess_content_type(image_ext)
+            }
+            if cache_control:
+                put_args['CacheControl'] = cache_control
+            if content_encoding:
+                put_args['ContentEncoding'] = content_encoding
 
-        # Build arguments for upload and submit to thread pool
-        put_args = {
-            'Bucket': bucket,
-            'Key': key,
-            'Body': data,
-            'ContentType': _guess_content_type(image_ext)
-        }
-        if cache_control:
-            put_args['CacheControl'] = cache_control
-        if content_encoding:
-            put_args['ContentEncoding'] = content_encoding
+            upload_futures.append(_submit_upload(put_args))
 
-        upload_futures.append(_submit_upload(put_args))
-
-        # Backpressure: if too many in-flight, drain some completed
-        if len(upload_futures) >= max_workers * inflight_factor:
-            _drain_completed(limit=max_workers)
-
-        t = tiles.fetchone()
+            # Backpressure: if too many in-flight, drain some completed
+            if len(upload_futures) >= max_workers * inflight_factor:
+                _drain_completed(limit=max_workers)
 
     # Wait for all remaining uploads to finish
     for f in upload_futures:
@@ -687,7 +690,7 @@ def mbtiles_to_s3(mbtiles_file, bucket, **kwargs):
     executor.shutdown(wait=True)
 
     if not silent:
-        logger.debug('tile upload complete (%d tiles).' % done)
+        logger.debug('tile upload complete (%d tiles, sqlite_batch=%d).' % (done, sqlite_batch))
 
     # UTFGrid export (if present)
     callback = kwargs.get('callback')
