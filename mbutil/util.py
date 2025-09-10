@@ -545,11 +545,10 @@ def mbtiles_to_s3(mbtiles_file, bucket, **kwargs):
                 try:
                     f.result()
                     done += 1
-                    if not silent and (done % 100 == 0):
+                    if (done % 1000 == 0):
                         logger.info('%s tiles uploaded' % done)
                 except (BotoCoreError, ClientError) as e:
-                    if not silent:
-                        logger.error('Tile upload failed: %s', e)
+                    logger.error('Tile upload failed: %s', e)
                 drained += 1
                 if drained >= limit:
                     break
@@ -612,8 +611,7 @@ def mbtiles_to_s3(mbtiles_file, bucket, **kwargs):
             if (done % 1000 == 0):
                 logger.info('%s tiles uploaded' % done)
         except (BotoCoreError, ClientError) as e:
-            if not silent:
-                logger.error('Tile upload failed: %s', e)
+            logger.error('Tile upload failed: %s', e)
 
     executor.shutdown(wait=True)
 
